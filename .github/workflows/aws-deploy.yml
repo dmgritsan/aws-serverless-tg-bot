@@ -1,0 +1,82 @@
+name: Deploy CDK Stack
+
+on:
+  push:
+    branches:
+      - main      # deploys to prod
+      - develop   # deploys to dev
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - prod
+
+env:
+  DEPLOY_ENV: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'prod' || 'dev') }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    environment: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'prod' || 'dev') }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Initialize project
+        run: |
+          npm install
+          npm install -g aws-cdk typescript
+          echo "Node version: $(node --version)"
+          echo "NPM version: $(npm --version)"
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Set up AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-duration-seconds: 3600
+
+      - name: Bootstrap CDK Environment
+        env:
+          NODE_ENV: bootstrap
+        run: |
+          echo "Bootstrapping CDK environment..."
+          cdk bootstrap aws://${{ vars.AWS_ACCOUNT_ID }}/${{ vars.AWS_REGION }}
+
+      - name: CDK Deploy
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          NODE_ENV: ${{ env.DEPLOY_ENV }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+        run: |
+          echo "Deploying to $NODE_ENV environment..."
+          echo "Synthesizing stack..."
+          cdk synth
+          echo "Deploying stack..."
+          cdk deploy --require-approval never
+
+      - name: Deployment Status
+        if: always()
+        run: |
+          if [ ${{ job.status }} == 'success' ]; then
+            echo "✅ Deployment to ${{ env.DEPLOY_ENV }} completed successfully"
+          else
+            echo "❌ Deployment to ${{ env.DEPLOY_ENV }} failed"
+          fi
