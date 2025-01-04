@@ -1,68 +1,59 @@
 import json
-import boto3
-import urllib3
 import os
-import datetime
-from botocore.exceptions import ClientError
+import urllib3
+from common.telegram_utils import TelegramUtils
 
-# Initialize urllib3
+# Initialize clients
 http = urllib3.PoolManager()
+telegram_utils = TelegramUtils()
 
-# DynamoDB client
-dynamodb = boto3.resource('dynamodb')
-message_logs_table = dynamodb.Table(os.environ['MESSAGE_LOGS_TABLE'])
+# Constants
+TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
 
-def log_bot_message(user_id, message_text, telegram_response):
-    """Log bot's message to DynamoDB using Telegram response data"""
-    timestamp = datetime.datetime.now().isoformat()
-    result = telegram_response['result']
-    from_user = result.get('from', {})  # Bot info from Telegram
-
-    item = {
-        'user_id': user_id,
-        'timestamp': timestamp,
-        'message_type': 'bot_message',
-        'message': message_text,
-        'telegram_message_id': result.get('message_id'),
-        'sender_id': str(from_user.get('id')),
-        'is_bot': from_user.get('is_bot', True),
-        'ttl': int((datetime.datetime.now() + datetime.timedelta(days=90)).timestamp())
+def send_telegram_message(chat_id, message, reply_to_message_id=None):
+    """Send message to Telegram"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    
+    data = {
+        'chat_id': chat_id,
+        'text': message,
+        'parse_mode': 'HTML'
     }
-    try:
-        message_logs_table.put_item(Item=item)
-    except ClientError as e:
-        print(f"Error logging message: {e}")
+    
+    if reply_to_message_id:
+        data['reply_to_message_id'] = reply_to_message_id
+    
+    response = http.request(
+        'POST',
+        url,
+        fields=data
+    )
+    
+    if response.status != 200:
+        raise Exception(f"Failed to send message: {response.data.decode('utf-8')}")
+    
+    return json.loads(response.data.decode('utf-8'))
 
 def lambda_handler(event, context):
     for record in event['Records']:
         try:
             message = json.loads(record['body'])
-            user_id = message['user_id']
+            chat_id = message['chat_id']
             text = message['message']
+            reply_to = message.get('reply_to_message_id')
             
             # Send message to Telegram
-            response = http.request(
-                'POST',
-                f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
-                headers={'Content-Type': 'application/json'},
-                body=json.dumps({
-                    'chat_id': user_id,
-                    'text': text,
-                    'parse_mode': 'HTML'
-                })
-            )
+            response = send_telegram_message(chat_id, text, reply_to)
             
-            if response.status == 200:
-                telegram_response = json.loads(response.data.decode('utf-8'))
-                log_bot_message(user_id, text, telegram_response)
-            else:
-                print(f"Failed to send message: {response.data.decode('utf-8')}")
-                
+            # Log the sent message using the response data
+            telegram_utils.log_message(response['result'], message_type='bot_message')
+            
         except Exception as e:
-            print(f"Error processing message: {str(e)}")
+            print(f"Error sending message: {str(e)}")
+            print(f"Message data: {json.dumps(message)}")
             continue
     
     return {
         'statusCode': 200,
-        'body': json.dumps('Messages processed')
+        'body': json.dumps('Message sending complete')
     } 
