@@ -5,7 +5,7 @@ from common.telegram_utils import TelegramUtils
 
 # Initialize clients
 http = urllib3.PoolManager()
-telegram_utils = TelegramUtils()
+telegram_utils = TelegramUtils(require_outgoing_queue=False)
 
 # Constants
 TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']

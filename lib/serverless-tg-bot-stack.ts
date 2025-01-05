@@ -19,13 +19,33 @@ export class ServerlessTgBotStack extends cdk.Stack {
 
     const env = props.environment;
 
-    // Create DynamoDB tables
+    // Create SQS queues with proper configuration
+    const outgoingQueue = new sqs.Queue(this, `OutgoingQueue-${env}`, {
+      visibilityTimeout: cdk.Duration.seconds(30),
+      retentionPeriod: cdk.Duration.days(1),
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const processingQueue = new sqs.Queue(this, `ProcessingQueue-${env}`, {
+      visibilityTimeout: cdk.Duration.seconds(30),
+      retentionPeriod: cdk.Duration.days(1),
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const uploadQueue = new sqs.Queue(this, `UploadQueue-${env}`, {
+      visibilityTimeout: cdk.Duration.seconds(90),
+      retentionPeriod: cdk.Duration.days(1),
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // Create DynamoDB table with proper update behavior
     const messageLogsTable = new dynamodb.Table(this, `MessageLogs-${env}`, {
       partitionKey: { name: 'user_id', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: 'ttl',
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // Enable point-in-time recovery for safer updates
+      pointInTimeRecovery: true,
     });
 
     // Add GSI for media groups
@@ -35,29 +55,22 @@ export class ServerlessTgBotStack extends cdk.Stack {
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
     });
 
-    // Create SQS queue for outgoing messages
-    const outgoingQueue = new sqs.Queue(this, `OutgoingQueue-${env}`, {
-      visibilityTimeout: cdk.Duration.seconds(30),
-    });
-
-    // Create SQS queue for attachments
-    const attachmentQueue = new sqs.Queue(this, `AttachmentQueue-${env}`, {
-      visibilityTimeout: cdk.Duration.seconds(30),
-    });
-
-    // Create SQS queue for message processing
-    const processingQueue = new sqs.Queue(this, `ProcessingQueue-${env}`, {
-      visibilityTimeout: cdk.Duration.seconds(30),
-    });
-
     // Create S3 bucket for file storage
     const fileStorageBucket = new s3.Bucket(this, `FileStorage-${env}`, {
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // Remove autoDeleteObjects and handle cleanup differently
       lifecycleRules: [
         {
-          expiration: cdk.Duration.days(90),
-        },
+          // Automatically delete objects after 30 days
+          expiration: cdk.Duration.days(30),
+        }
       ],
+      // Enable versioning for better data protection
+      versioned: true,
+      // Block public access
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      // Enable encryption
+      encryption: s3.BucketEncryption.S3_MANAGED,
     });
 
     // Create Lambda function for message validation
@@ -65,7 +78,7 @@ export class ServerlessTgBotStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'tg_message_validator.lambda_handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambdas'), {
-        exclude: ['*', '!tg_message_validator.py', '!common/telegram_utils.py'],
+        exclude: ['*.*', '!tg_message_validator.py', '!common/telegram_utils.py'],
       }),
       environment: {
         MESSAGE_LOGS_TABLE: messageLogsTable.tableName,
@@ -80,24 +93,22 @@ export class ServerlessTgBotStack extends cdk.Stack {
           iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
         ],
         inlinePolicies: {
-          'DynamoDBAccess': new iam.PolicyDocument({
+          'LambdaAccess': new iam.PolicyDocument({
             statements: [
               new iam.PolicyStatement({
                 effect: iam.Effect.ALLOW,
                 actions: [
                   'dynamodb:PutItem',
-                  'dynamodb:Query'
+                  'dynamodb:Query',
+                  'sqs:SendMessage',
+                  'sqs:GetQueueUrl'
                 ],
-                resources: [messageLogsTable.tableArn]
-              })
-            ]
-          }),
-          'SQSAccess': new iam.PolicyDocument({
-            statements: [
-              new iam.PolicyStatement({
-                effect: iam.Effect.ALLOW,
-                actions: ['sqs:SendMessage'],
-                resources: [outgoingQueue.queueArn]
+                resources: [
+                  messageLogsTable.tableArn,
+                  outgoingQueue.queueArn,
+                  processingQueue.queueArn,
+                  uploadQueue.queueArn
+                ]
               })
             ]
           })
@@ -111,11 +122,12 @@ export class ServerlessTgBotStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'tg_message_processor.lambda_handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambdas'), {
-        exclude: ['*', '!tg_message_processor.py', '!common/telegram_utils.py'],
+        exclude: ['*.*', '!tg_message_processor.py', '!common/telegram_utils.py'],
       }),
       environment: {
+        MESSAGE_LOGS_TABLE: messageLogsTable.tableName,
         OUTGOING_QUEUE_URL: outgoingQueue.queueUrl,
-        ATTACHMENT_QUEUE_URL: attachmentQueue.queueUrl,
+        UPLOAD_QUEUE_URL: uploadQueue.queueUrl,
       },
       role: new iam.Role(this, 'MessageProcessorRole', {
         assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
@@ -123,12 +135,25 @@ export class ServerlessTgBotStack extends cdk.Stack {
           iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
         ],
         inlinePolicies: {
-          'DynamoDBAccess': new iam.PolicyDocument({
+          'LambdaAccess': new iam.PolicyDocument({
             statements: [
               new iam.PolicyStatement({
                 effect: iam.Effect.ALLOW,
-                actions: ['dynamodb:PutItem'],
-                resources: [messageLogsTable.tableArn]
+                actions: [
+                  'dynamodb:PutItem',
+                  'dynamodb:Query',
+                  'sqs:SendMessage',
+                  'sqs:GetQueueUrl',
+                  'sqs:ReceiveMessage',
+                  'sqs:DeleteMessage'
+                ],
+                resources: [
+                  messageLogsTable.tableArn,
+                  `${messageLogsTable.tableArn}/index/MediaGroupIndex`,
+                  outgoingQueue.queueArn,
+                  uploadQueue.queueArn,
+                  processingQueue.queueArn
+                ]
               })
             ]
           })
@@ -146,7 +171,7 @@ export class ServerlessTgBotStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'tg_message_sender.lambda_handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambdas'), {
-        exclude: ['*', '!tg_message_sender.py', '!common/telegram_utils.py'],
+        exclude: ['*.*', '!tg_message_sender.py', '!common/telegram_utils.py'],
       }),
       role: new iam.Role(this, 'MessageSenderRole', {
         assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
@@ -182,11 +207,12 @@ export class ServerlessTgBotStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'tg_attachment_processor.lambda_handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambdas'), {
-        exclude: ['*', '!tg_attachment_processor.py', '!common/telegram_utils.py'],
+        exclude: ['*.*', '!tg_attachment_processor.py', '!common/telegram_utils.py'],
       }),
       environment: {
         FILE_STORAGE_BUCKET: fileStorageBucket.bucketName,
         PROCESSING_QUEUE_URL: processingQueue.queueUrl,
+        OUTGOING_QUEUE_URL: outgoingQueue.queueUrl,
         TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
         MAX_RETRY_ATTEMPTS: '3',
       },
@@ -196,31 +222,19 @@ export class ServerlessTgBotStack extends cdk.Stack {
           iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
         ],
         inlinePolicies: {
-          'S3Access': new iam.PolicyDocument({
+          'LambdaAccess': new iam.PolicyDocument({
             statements: [
               new iam.PolicyStatement({
                 effect: iam.Effect.ALLOW,
                 actions: [
                   's3:PutObject',
                   's3:GetObject',
-                ],
-                resources: [
-                  `${fileStorageBucket.bucketArn}/*`
-                ]
-              })
-            ]
-          }),
-          'SQSAccess': new iam.PolicyDocument({
-            statements: [
-              new iam.PolicyStatement({
-                effect: iam.Effect.ALLOW,
-                actions: [
                   'sqs:SendMessage',
-                  'sqs:DeleteMessage',
-                  'sqs:ReceiveMessage'
+                  'sqs:GetQueueUrl'
                 ],
                 resources: [
-                  attachmentQueue.queueArn,
+                  `${fileStorageBucket.bucketArn}/*`,
+                  processingQueue.queueArn,
                   outgoingQueue.queueArn
                 ]
               })
@@ -233,7 +247,7 @@ export class ServerlessTgBotStack extends cdk.Stack {
     });
 
     // Add SQS trigger for Attachment Processor
-    attachmentProcessor.addEventSource(new SqsEventSource(attachmentQueue, {
+    attachmentProcessor.addEventSource(new SqsEventSource(uploadQueue, {
       batchSize: 1,
     }));
 
@@ -253,7 +267,7 @@ export class ServerlessTgBotStack extends cdk.Stack {
 
     // Add Telegram webhook endpoint
     const webhookResource = api.root.addResource('tg-webhook');
-    webhookResource.addMethod('POST', new apigateway.LambdaIntegration(messageProcessor));
+    webhookResource.addMethod('POST', new apigateway.LambdaIntegration(messageValidator));
 
     // Add output for webhook URL
     new cdk.CfnOutput(this, 'WebhookUrl', {

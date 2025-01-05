@@ -59,6 +59,8 @@ def get_aws_resources():
     return dynamodb, message_logs_table, sqs, processing_queue_url, upload_queue_url, telegram_utils
 
 def is_first_media_group_message(media_group_id):
+    if not media_group_id:
+        return True
     """Check if this is the first message with this media_group_id"""
     try:
         response = message_logs_table.query(
@@ -67,9 +69,9 @@ def is_first_media_group_message(media_group_id):
             ExpressionAttributeValues={
                 ':mgid': media_group_id
             },
-            Limit=2  # We only need to know if there's more than one
+            Limit=1  # We only need to know if there's more than one
         )
-        return len(response.get('Items', [])) <= 1
+        return len(response.get('Items', [])) == 0
     except ClientError as e:
         print(f"Error querying media group: {e}")
         return False
@@ -92,6 +94,7 @@ def lambda_handler(event, context):
                 'body': json.dumps({'error': 'Missing or invalid user/chat data in request'})
             }
         
+        first_media_group_message = is_first_media_group_message(data['media_group_id'])
         # Log message
         telegram_utils.log_message(message)
         
@@ -110,7 +113,7 @@ def lambda_handler(event, context):
             telegram_utils.send_to_sqs(upload_queue_url, data)
             
             # Only send notification for first message in media group
-            if not data['media_group_id'] or is_first_media_group_message(data['media_group_id']):
+            if first_media_group_message:
                 telegram_utils.send_message(data['chat_id'], "📤 Processing your file...", data['message_id'])
         else:
             # Text-only message goes to processing queue

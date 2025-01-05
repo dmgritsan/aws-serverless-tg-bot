@@ -17,6 +17,27 @@ FILE_STORAGE_BUCKET = os.environ['FILE_STORAGE_BUCKET']
 TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
 PROCESSING_QUEUE_URL = os.environ['PROCESSING_QUEUE_URL']
 
+def get_file_extension(file_info):
+    """Get file extension based on mime type or file path"""    
+    # For photos, always use jpg
+    if file_info.get('type') == 'photo':
+        return '.jpg'
+        
+    mime_to_ext = {
+        'image/jpeg': '.jpg',
+        'image/png': '.png',
+        'image/gif': '.gif',
+        'video/mp4': '.mp4',
+        'audio/mpeg': '.mp3',
+        'audio/ogg': '.ogg',
+        'application/pdf': '.pdf',
+    }
+    
+    if 'mime_type' in file_info:
+        return mime_to_ext.get(file_info['mime_type'], '')
+    
+    return ''
+
 def get_file_from_telegram(file_id):
     """Get file path from Telegram"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile"
@@ -42,9 +63,13 @@ def download_file(file_path):
     
     return response.data
 
-def upload_to_s3(user_id, message_id, file_name, file_data):
+def upload_to_s3(chat_id, message_id, media_group_id, file_name, file_data):
     """Upload file to S3 with retry logic"""
-    key = f"{user_id}/{message_id}/{file_name}"
+    # Determine the folder structure based on media_group_id
+    if media_group_id:
+        key = f"{chat_id}/{media_group_id}/{message_id}/{file_name}"
+    else:
+        key = f"{chat_id}/no_media_group/{message_id}/{file_name}"
     
     for attempt in range(MAX_RETRY_ATTEMPTS):
         try:
@@ -65,7 +90,18 @@ def process_file(data):
     """Process a single file"""
     file_info = data['file_info']
     file_id = file_info['file_id']
-    file_name = file_info.get('file_name', f"{file_info['file_unique_id']}")
+    
+    # Get file name based on file type
+    if file_info.get('file_name'):
+        # Document type files have file_name directly
+        file_name = file_info['file_name']
+    elif 'file_unique_id' in file_info:
+        # Photos and other media types need to use unique_id
+        extension = get_file_extension(file_info)
+        file_name = f"{file_info['file_unique_id']}{extension}"
+    else:
+        # Fallback name if no identifiers found
+        file_name = f"file_{int(time.time())}"
     
     # Get file path from Telegram
     file_path = get_file_from_telegram(file_id)
@@ -73,8 +109,17 @@ def process_file(data):
     # Download file
     file_data = download_file(file_path)
     
-    # Upload to S3
-    s3_key = upload_to_s3(data['user_id'], data['message_id'], file_name, file_data)
+    # Get media_group_id from data (might be None)
+    media_group_id = data.get('media_group_id')
+    
+    # Upload to S3 with new path structure
+    s3_key = upload_to_s3(
+        chat_id=data['chat_id'],
+        message_id=data['message_id'],
+        media_group_id=media_group_id,
+        file_name=file_name,
+        file_data=file_data
+    )
     
     return s3_key
 

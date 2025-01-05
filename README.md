@@ -15,14 +15,26 @@ graph TD
         style C fill:#FF9900
     end
     subgraph Lambda["AWS Lambda"]
-        D[Message Processor]
+        D[Message Validator]
+        E[Message Processor]
         F[Message Sender]
+        H[Attachment Processor]
         style D fill:#FF4D00
+        style E fill:#FF4D00
         style F fill:#FF4D00
+        style H fill:#FF4D00
     end
     subgraph Queue["Amazon SQS"]
-        E[Outgoing Queue]
-        style E fill:#FF4F8B
+        I[Upload Queue]
+        J[Processing Queue]
+        K[Outgoing Queue]
+        style I fill:#FF4F8B
+        style J fill:#FF4F8B
+        style K fill:#FF4F8B
+    end
+    subgraph Storage["Amazon S3"]
+        L[(File Storage)]
+        style L fill:#3B48CC
     end
     subgraph Database["Amazon DynamoDB"]
         G[(Message Logs)]
@@ -30,10 +42,15 @@ graph TD
     end
     B --> C
     C --> D
-    D --> E
+    D --> I
+    D --> J
     D --> G
-    E --> F
-    F --> G
+    I --> H
+    H --> L
+    H --> K
+    J --> E
+    E --> K
+    K --> F
     F --> A
 ```
 
@@ -64,8 +81,12 @@ graph TD
 ├── lib/                    # CDK stack definition
 │   └── serverless-tg-bot-stack.ts
 ├── lambdas/               # Lambda function code
-│   ├── tg_message_processing.py
-│   └── tg_message_sender.py
+│   ├── common/            # Shared utilities
+│   │   └── telegram_utils.py
+│   ├── tg_message_validator.py
+│   ├── tg_message_processor.py
+│   ├── tg_message_sender.py
+│   └── tg_attachment_processor.py
 ├── .github/workflows/     # GitHub Actions workflows
 │   └── aws-deploy.yml
 ├── cdk.json              # CDK configuration
@@ -123,14 +144,20 @@ Note: The webhook URL should be HTTPS and publicly accessible.
 ## Message Flow
 
 1. Telegram sends webhook POST request to API Gateway
-2. Message Processor Lambda:
-   - Logs incoming message
-   - Validates incoming messages and creates response
-   - Queues response in SQS
-3. Message Sender Lambda:
+2. Message Validator Lambda:
+   - Validates incoming messages
+   - Logs first message in media groups
+   - Routes to appropriate queue (Upload or Processing)
+3. Attachment Processor Lambda (for files):
+   - Downloads files from Telegram
+   - Uploads to S3
+   - Queues message for processing
+4. Message Processor Lambda:
+   - Processes messages and creates responses
+   - Queues responses in Outgoing Queue
+5. Message Sender Lambda:
    - Processes queued messages
    - Sends responses to Telegram
-   - Logs outgoing messages
 
 ## License 📄
 

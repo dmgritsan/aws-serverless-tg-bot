@@ -5,11 +5,22 @@ import datetime
 from botocore.exceptions import ClientError
 
 class TelegramUtils:
-    def __init__(self):
+    def __init__(self, require_outgoing_queue=True):
+        """Initialize with AWS resources
+        
+        Args:
+            require_outgoing_queue (bool): Whether to require queue URLs in environment
+        """
         self.sqs = boto3.client('sqs')
         self.dynamodb = boto3.resource('dynamodb')
-        self.outgoing_queue_url = os.environ['OUTGOING_QUEUE_URL']
-        self.message_logs_table = self.dynamodb.Table(os.environ['MESSAGE_LOGS_TABLE'])
+        
+        # Get table name if available
+        if 'MESSAGE_LOGS_TABLE' in os.environ:
+            self.message_logs_table = self.dynamodb.Table(os.environ['MESSAGE_LOGS_TABLE'])
+        
+        # Get queue URLs if required
+        if require_outgoing_queue:
+            self.outgoing_queue_url = os.environ['OUTGOING_QUEUE_URL']
     
     def extract_file_info(self, message):
         """Extract file information from different types of attachments"""
@@ -26,6 +37,7 @@ class TelegramUtils:
                 file_data = processor(message[att_type])
                 return {
                     'type': att_type,
+                    att_type: message[att_type],  # Save original data
                     'file_id': file_data.get('file_id'),
                     'file_unique_id': file_data.get('file_unique_id'),
                     'file_size': file_data.get('file_size'),
@@ -75,10 +87,14 @@ class TelegramUtils:
             'chat_id': data['chat_id'],
             'sender_id': data['sender_id'],
             'is_bot': data['is_bot'],
-            'media_group_id': data['media_group_id'],
             'ttl': int((datetime.datetime.now() + datetime.timedelta(days=90)).timestamp())
         }
         
+        # Only add media_group_id if it exists and is not None
+        if data.get('media_group_id'):
+            item['media_group_id'] = data['media_group_id']
+        
+        # Add file info if present
         if 'file_info' in data:
             item['file_info'] = data['file_info']
         
@@ -86,6 +102,8 @@ class TelegramUtils:
             self.message_logs_table.put_item(Item=item)
         except ClientError as e:
             print(f"Error logging message: {e}")
+            print(f"Item data: {json.dumps(item)}")
+            raise
     
     def send_to_sqs(self, queue_url, message_body):
         """Send message to SQS queue"""
@@ -96,20 +114,12 @@ class TelegramUtils:
     
     def send_message(self, chat_id, text, reply_to_message_id=None):
         """Send message to user through SQS outgoing queue"""
+        if not hasattr(self, 'outgoing_queue_url'):
+            raise ValueError("Outgoing queue URL not configured")
+            
         outgoing_message = {
             'chat_id': chat_id, 
             'message': text,
             'reply_to_message_id': reply_to_message_id
         }
-        
-        # Log outgoing message
-        log_message = {
-            'from': {'id': 'bot', 'is_bot': True},
-            'chat': {'id': chat_id},
-            'message_id': reply_to_message_id,  # Using reply_to as reference
-            'text': text
-        }
-        self.log_message(log_message, message_type='bot_message')
-        
-        # Send to outgoing queue
         self.send_to_sqs(self.outgoing_queue_url, outgoing_message) 
