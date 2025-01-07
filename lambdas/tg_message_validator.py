@@ -10,6 +10,7 @@ message_logs_table = None
 sqs = None
 processing_queue_url = None
 upload_queue_url = None
+callback_queue_url = None
 telegram_utils = None
 
 WELCOME_MESSAGE = """
@@ -42,7 +43,7 @@ Available commands:
 
 def get_aws_resources():
     """Lazy initialization of AWS resources"""
-    global dynamodb, message_logs_table, sqs, processing_queue_url, upload_queue_url, telegram_utils
+    global dynamodb, message_logs_table, sqs, processing_queue_url, upload_queue_url, callback_queue_url, telegram_utils
     
     if dynamodb is None:
         dynamodb = boto3.resource('dynamodb')
@@ -52,11 +53,12 @@ def get_aws_resources():
         sqs = boto3.client('sqs')
         processing_queue_url = os.environ['PROCESSING_QUEUE_URL']
         upload_queue_url = os.environ['UPLOAD_QUEUE_URL']
+        callback_queue_url = os.environ['CALLBACK_QUEUE_URL']
     
     if telegram_utils is None:
         telegram_utils = TelegramUtils()
     
-    return dynamodb, message_logs_table, sqs, processing_queue_url, upload_queue_url, telegram_utils
+    return dynamodb, message_logs_table, sqs, processing_queue_url, upload_queue_url, callback_queue_url, telegram_utils
 
 def is_first_media_group_message(media_group_id):
     if not media_group_id:
@@ -78,14 +80,29 @@ def is_first_media_group_message(media_group_id):
 
 def lambda_handler(event, context):
     # Get AWS resources at the start of handler
-    global dynamodb, message_logs_table, sqs, processing_queue_url, upload_queue_url, telegram_utils
-    dynamodb, message_logs_table, sqs, processing_queue_url, upload_queue_url, telegram_utils = get_aws_resources()
+    dynamodb, message_logs_table, sqs, processing_queue_url, upload_queue_url, callback_queue_url, telegram_utils = get_aws_resources()
     
     try:
+        # Parse webhook data
         body = json.loads(event.get('body', '{}'))
-        message = body.get('message', {})
         
-        # Extract and validate message data
+        # Handle callback queries
+        if 'callback_query' in body:
+            callback_data = {
+                'callback_id': body['callback_query']['id'],
+                'chat_id': body['callback_query']['message']['chat']['id'],
+                'message_id': body['callback_query']['message']['message_id'],
+                'data': body['callback_query']['data'],
+                'user_id': body['callback_query']['from']['id']
+            }
+            telegram_utils.send_to_sqs(callback_queue_url, callback_data)
+            return {
+                'statusCode': 200,
+                'body': json.dumps({'status': 'ok'})
+            }
+        
+        message = body.get('message', {})
+        # Handle regular messages (existing code)
         data = telegram_utils.extract_message_data(message)
         if not data['user_id'] or not data['chat_id']:
             print("Error: Invalid message format - missing user or chat data")

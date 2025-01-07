@@ -38,6 +38,12 @@ export class ServerlessTgBotStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    const callbackQueue = new sqs.Queue(this, 'CallbackQueue', {
+      queueName: `${id}-callback-queue-${env}`,
+      visibilityTimeout: cdk.Duration.seconds(60),
+      retentionPeriod: cdk.Duration.days(1),
+    });
+
     // Create DynamoDB table with proper update behavior
     const messageLogsTable = new dynamodb.Table(this, `MessageLogs-${env}`, {
       partitionKey: { name: 'user_id', type: dynamodb.AttributeType.STRING },
@@ -85,6 +91,7 @@ export class ServerlessTgBotStack extends cdk.Stack {
         OUTGOING_QUEUE_URL: outgoingQueue.queueUrl,
         PROCESSING_QUEUE_URL: processingQueue.queueUrl,
         UPLOAD_QUEUE_URL: uploadQueue.queueUrl,
+        CALLBACK_QUEUE_URL: callbackQueue.queueUrl,
         TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
       },
       role: new iam.Role(this, 'MessageValidatorRole', {
@@ -107,7 +114,8 @@ export class ServerlessTgBotStack extends cdk.Stack {
                   messageLogsTable.tableArn,
                   outgoingQueue.queueArn,
                   processingQueue.queueArn,
-                  uploadQueue.queueArn
+                  uploadQueue.queueArn,
+                  callbackQueue.queueArn
                 ]
               })
             ]
@@ -248,6 +256,47 @@ export class ServerlessTgBotStack extends cdk.Stack {
 
     // Add SQS trigger for Attachment Processor
     attachmentProcessor.addEventSource(new SqsEventSource(uploadQueue, {
+      batchSize: 1,
+    }));
+
+    // Create Lambda function for callback processing
+    const callbackProcessor = new lambda.Function(this, 'TelegramCallbackProcessor', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'tg_callback_processor.lambda_handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambdas'), {
+        exclude: ['*.*', '!tg_callback_processor.py', '!common/telegram_utils.py'],
+      }),
+      environment: {
+        OUTGOING_QUEUE_URL: outgoingQueue.queueUrl,
+        TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
+      },
+      role: new iam.Role(this, 'CallbackProcessorRole', {
+        assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+        managedPolicies: [
+          iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+        ],
+        inlinePolicies: {
+          'LambdaAccess': new iam.PolicyDocument({
+            statements: [
+              new iam.PolicyStatement({
+                effect: iam.Effect.ALLOW,
+                actions: [
+                  'sqs:SendMessage',
+                  'sqs:GetQueueUrl'
+                ],
+                resources: [
+                  outgoingQueue.queueArn
+                ]
+              })
+            ]
+          })
+        }
+      }),
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Add SQS trigger for Callback Processor
+    callbackProcessor.addEventSource(new SqsEventSource(callbackQueue, {
       batchSize: 1,
     }));
 

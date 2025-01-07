@@ -19,18 +19,22 @@ graph TD
         E[Message Processor]
         F[Message Sender]
         H[Attachment Processor]
+        M[Callback Processor]
         style D fill:#FF4D00
         style E fill:#FF4D00
         style F fill:#FF4D00
         style H fill:#FF4D00
+        style M fill:#FF4D00
     end
     subgraph Queue["Amazon SQS"]
         I[Upload Queue]
         J[Processing Queue]
         K[Outgoing Queue]
+        N[Callback Queue]
         style I fill:#FF4F8B
         style J fill:#FF4F8B
         style K fill:#FF4F8B
+        style N fill:#FF4F8B
     end
     subgraph Storage["Amazon S3"]
         L[(File Storage)]
@@ -44,12 +48,15 @@ graph TD
     C --> D
     D --> I
     D --> J
+    D --> N
     D --> G
     I --> H
     H --> L
     H --> K
     J --> E
     E --> K
+    N --> M
+    M --> K
     K --> F
     F --> A
 ```
@@ -85,8 +92,9 @@ graph TD
 │   │   └── telegram_utils.py
 │   ├── tg_message_validator.py
 │   ├── tg_message_processor.py
-│   ├── tg_message_sender.py
-│   └── tg_attachment_processor.py
+│   ├── tg_attachment_processor.py
+│   ├── tg_callback_processor.py
+│   └── tg_message_sender.py
 ├── .github/workflows/     # GitHub Actions workflows
 │   └── aws-deploy.yml
 ├── cdk.json              # CDK configuration
@@ -146,18 +154,28 @@ Note: The webhook URL should be HTTPS and publicly accessible.
 1. Telegram sends webhook POST request to API Gateway
 2. Message Validator Lambda:
    - Validates incoming messages
-   - Logs first message in media groups
-   - Routes to appropriate queue (Upload or Processing)
+   - Logs messages to DynamoDB
+   - Routes to appropriate queue:
+     * Files → Upload Queue
+     * Text → Processing Queue
+     * Callbacks → Callback Queue
 3. Attachment Processor Lambda (for files):
    - Downloads files from Telegram
    - Uploads to S3
+   - Sends confirmation with action buttons
    - Queues message for processing
 4. Message Processor Lambda:
-   - Processes messages and creates responses
+   - Processes text messages
+   - Creates responses with optional inline buttons
    - Queues responses in Outgoing Queue
-5. Message Sender Lambda:
+5. Callback Processor Lambda:
+   - Handles button clicks
+   - Processes callback actions
+   - Sends responses via Outgoing Queue
+6. Message Sender Lambda:
    - Processes queued messages
    - Sends responses to Telegram
+   - Supports messages with inline buttons
 
 ## License 📄
 

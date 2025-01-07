@@ -23,10 +23,17 @@ def lambda_handler(event, context):
             
             # Handle messages with uploaded files
             if 'uploaded_file' in data:
+                # Create test buttons
+                buttons = [
+                    [{'text': '✅ Confirm', 'callback_data': f'confirm_{data["message_id"]}'}],
+                    [{'text': '❌ Delete', 'callback_data': f'delete_{data["message_id"]}'}]
+                ]
+                
                 telegram_utils.send_message(
                     data['chat_id'],
                     f"✅ File has been uploaded successfully: {data['uploaded_file']}",
-                    data['message_id']
+                    data['message_id'],
+                    inline_buttons=buttons
                 )
                 continue
             

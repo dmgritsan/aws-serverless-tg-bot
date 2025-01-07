@@ -10,7 +10,7 @@ telegram_utils = TelegramUtils(require_outgoing_queue=False)
 # Constants
 TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
 
-def send_telegram_message(chat_id, message, reply_to_message_id=None):
+def send_telegram_message(chat_id, message, reply_to_message_id=None, reply_markup=None):
     """Send message to Telegram"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
@@ -22,6 +22,9 @@ def send_telegram_message(chat_id, message, reply_to_message_id=None):
     
     if reply_to_message_id:
         data['reply_to_message_id'] = reply_to_message_id
+        
+    if reply_markup:
+        data['reply_markup'] = json.dumps(reply_markup)
     
     response = http.request(
         'POST',
@@ -41,9 +44,10 @@ def lambda_handler(event, context):
             chat_id = message['chat_id']
             text = message['message']
             reply_to = message.get('reply_to_message_id')
+            reply_markup = message.get('reply_markup')
             
             # Send message to Telegram
-            response = send_telegram_message(chat_id, text, reply_to)
+            response = send_telegram_message(chat_id, text, reply_to, reply_markup)
             
             # Log the sent message using the response data
             telegram_utils.log_message(response['result'], message_type='bot_message')

@@ -112,8 +112,17 @@ class TelegramUtils:
             MessageBody=json.dumps(message_body)
         )
     
-    def send_message(self, chat_id, text, reply_to_message_id=None):
-        """Send message to user through SQS outgoing queue"""
+    def send_message(self, chat_id, text, reply_to_message_id=None, inline_buttons=None):
+        """Send message to user through SQS outgoing queue
+        
+        Args:
+            chat_id: Telegram chat ID
+            text: Message text
+            reply_to_message_id: Optional message ID to reply to
+            inline_buttons: Optional list of button rows, where each button is dict with 'text' and 'callback_data'
+                Example: [[{'text': 'Button 1', 'callback_data': 'btn1'}],
+                         [{'text': 'Button 2', 'callback_data': 'btn2'}]]
+        """
         if not hasattr(self, 'outgoing_queue_url'):
             raise ValueError("Outgoing queue URL not configured")
             
@@ -122,4 +131,11 @@ class TelegramUtils:
             'message': text,
             'reply_to_message_id': reply_to_message_id
         }
+
+        # Add inline keyboard if buttons provided
+        if inline_buttons:
+            outgoing_message['reply_markup'] = {
+                'inline_keyboard': inline_buttons
+            }
+
         self.send_to_sqs(self.outgoing_queue_url, outgoing_message) 
