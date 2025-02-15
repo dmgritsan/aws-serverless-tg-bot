@@ -44,6 +44,12 @@ export class ServerlessTgBotStack extends cdk.Stack {
       retentionPeriod: cdk.Duration.days(1),
     });
 
+    const aiQueue = new sqs.Queue(this, `AIQueue-${env}`, {
+      visibilityTimeout: cdk.Duration.seconds(120), // Longer timeout for AI processing
+      retentionPeriod: cdk.Duration.days(1),
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     // Create DynamoDB table with proper update behavior
     const messageLogsTable = new dynamodb.Table(this, `MessageLogs-${env}`, {
       partitionKey: { name: 'user_id', type: dynamodb.AttributeType.STRING },
@@ -136,6 +142,7 @@ export class ServerlessTgBotStack extends cdk.Stack {
         MESSAGE_LOGS_TABLE: messageLogsTable.tableName,
         OUTGOING_QUEUE_URL: outgoingQueue.queueUrl,
         UPLOAD_QUEUE_URL: uploadQueue.queueUrl,
+        AI_QUEUE_URL: aiQueue.queueUrl,
       },
       role: new iam.Role(this, 'MessageProcessorRole', {
         assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
@@ -323,5 +330,62 @@ export class ServerlessTgBotStack extends cdk.Stack {
       value: `${api.url}tg-webhook`,
       description: 'URL for Telegram webhook',
     });
+
+    // Create Lambda layer for OpenAI
+    const openaiLayer = new lambda.LayerVersion(this, 'OpenAILayer', {
+      code: lambda.Code.fromAsset('lambda-layers/python.zip'),
+      compatibleRuntimes: [lambda.Runtime.PYTHON_3_12],
+      description: 'OpenAI API Layer',
+    });
+
+    // Then add the layer to the AI processor
+    const aiProcessor = new lambda.Function(this, 'AIContextProcessor', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'ai_context_processor.lambda_handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambdas'), {
+        exclude: ['*.*', '!ai_context_processor.py', '!common/telegram_utils.py'],
+      }),
+      layers: [openaiLayer],
+      environment: {
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+        FILE_STORAGE_BUCKET: fileStorageBucket.bucketName,
+        OUTGOING_QUEUE_URL: outgoingQueue.queueUrl,
+        AI_QUEUE_URL: aiQueue.queueUrl
+      },
+      role: new iam.Role(this, 'AIProcessorRole', {
+        assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+        managedPolicies: [
+          iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+        ],
+        inlinePolicies: {
+          'LambdaAccess': new iam.PolicyDocument({
+            statements: [
+              new iam.PolicyStatement({
+                effect: iam.Effect.ALLOW,
+                actions: [
+                  's3:GetObject',
+                  'sqs:SendMessage',
+                  'sqs:GetQueueUrl',
+                  'sqs:ReceiveMessage',
+                  'sqs:DeleteMessage'
+                ],
+                resources: [
+                  `${fileStorageBucket.bucketArn}/*`,
+                  outgoingQueue.queueArn,
+                  aiQueue.queueArn
+                ]
+              })
+            ]
+          })
+        }
+      }),
+      timeout: cdk.Duration.seconds(120),
+      memorySize: 256
+    });
+    
+    // Add SQS trigger
+    aiProcessor.addEventSource(new SqsEventSource(aiQueue, {
+      batchSize: 1
+    }));
   }
 } 

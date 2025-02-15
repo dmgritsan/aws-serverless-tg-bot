@@ -34,6 +34,20 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Create Lambda Layer
+        run: |
+          mkdir -p lambda-layers/python
+          cd lambda-layers/python
+          pip install openai -t .
+          cd ..
+          zip -r python.zip python/
+          cd ..
+
       - name: Initialize project
         run: |
           npm install
@@ -62,6 +76,7 @@ jobs:
       - name: CDK Deploy
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           NODE_ENV: ${{ env.DEPLOY_ENV }}
           AWS_REGION: ${{ vars.AWS_REGION }}
           AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
