@@ -167,7 +167,8 @@ export class ServerlessTgBotStack extends cdk.Stack {
                   `${messageLogsTable.tableArn}/index/MediaGroupIndex`,
                   outgoingQueue.queueArn,
                   uploadQueue.queueArn,
-                  processingQueue.queueArn
+                  processingQueue.queueArn,
+                  aiQueue.queueArn
                 ]
               })
             ]
