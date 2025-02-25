@@ -100,7 +100,11 @@ graph TD
 │   ├── tg_message_processor.py
 │   ├── tg_attachment_processor.py
 │   ├── tg_callback_processor.py
-│   └── tg_message_sender.py
+│   ├── tg_message_sender.py
+│   └── tg_ai_context_processor.py
+├── lambda-layers/         # Lambda layers
+│   └── python/           # Python dependencies for AI processing
+│       └── requirements.txt
 ├── .github/workflows/     # GitHub Actions workflows
 │   └── aws-deploy.yml
 ├── cdk.json              # CDK configuration
@@ -189,6 +193,28 @@ Note: The webhook URL should be HTTPS and publicly accessible.
    - Processes queued messages
    - Sends responses to Telegram
    - Supports messages with inline buttons
+
+## Lambda Layers
+
+The project uses AWS Lambda Layers to manage dependencies for the AI Context Processor:
+
+### OpenAI Layer
+- Location: `lambda-layers/python/`
+- Main dependency: `openai` Python package
+- Created during deployment by GitHub Actions
+- Shared across AI-enabled Lambda functions
+
+### Layer Management
+The Lambda Layer is automatically:
+- Built during CI/CD pipeline
+- Attached to AI Context Processor
+- Version controlled with the stack
+
+To modify layer dependencies:
+1. Update `lambda-layers/python/requirements.txt`
+2. The CI/CD pipeline will rebuild the layer during deployment
+
+Note: The layer is essential for the AI Context Processor as it provides the OpenAI SDK and its dependencies while keeping the Lambda function package size within limits.
 
 ## License 📄
 
