@@ -20,21 +20,25 @@ graph TD
         F[Message Sender]
         H[Attachment Processor]
         M[Callback Processor]
+        O[AI Context Processor]
         style D fill:#FF4D00
         style E fill:#FF4D00
         style F fill:#FF4D00
         style H fill:#FF4D00
         style M fill:#FF4D00
+        style O fill:#FF4D00
     end
     subgraph Queue["Amazon SQS"]
         I[Upload Queue]
         J[Processing Queue]
         K[Outgoing Queue]
         N[Callback Queue]
+        P[AI Queue]
         style I fill:#FF4F8B
         style J fill:#FF4F8B
         style K fill:#FF4F8B
         style N fill:#FF4F8B
+        style P fill:#FF4F8B
     end
     subgraph Storage["Amazon S3"]
         L[(File Storage)]
@@ -54,7 +58,9 @@ graph TD
     H --> L
     H --> K
     J --> E
-    E --> K
+    E --> P
+    P --> O
+    O --> K
     N --> M
     M --> K
     K --> F
@@ -115,6 +121,7 @@ Configure these in repository Settings → Secrets and variables → Actions →
 - `TELEGRAM_BOT_TOKEN`: Your Telegram bot token from @BotFather
 - `AWS_ACCESS_KEY_ID`: AWS access key for deployment
 - `AWS_SECRET_ACCESS_KEY`: AWS secret access key for deployment
+- `OPENAI_API_KEY`: Your OpenAI API key for AI processing
 
 #### GitHub Environment Variables
 Configure these in repository Settings → Secrets and variables → Actions → Variables:
@@ -167,12 +174,18 @@ Note: The webhook URL should be HTTPS and publicly accessible.
 4. Message Processor Lambda:
    - Processes text messages
    - Creates responses with optional inline buttons
+   - Routes context-dependent messages to AI Queue
+5. AI Context Processor Lambda:
+   - Retrieves conversation history from DynamoDB
+   - Maintains contextual state of conversations
+   - Processes messages using OpenAI API
+   - Generates context-aware responses
    - Queues responses in Outgoing Queue
-5. Callback Processor Lambda:
+6. Callback Processor Lambda:
    - Handles button clicks
    - Processes callback actions
    - Sends responses via Outgoing Queue
-6. Message Sender Lambda:
+7. Message Sender Lambda:
    - Processes queued messages
    - Sends responses to Telegram
    - Supports messages with inline buttons
